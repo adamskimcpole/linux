@@ -1052,6 +1052,12 @@ Load:   dtoverlay=i2s-gpio28-31
 Params: <None>
 
 
+Name:   iqaudio-codec
+Info:   Configures the IQaudio Codec audio card
+Load:   dtoverlay=iqaudio-codec,<param>
+Params: <None>
+
+
 Name:   iqaudio-dac
 Info:   Configures the IQaudio DAC audio card
 Load:   dtoverlay=iqaudio-dac,<param>
