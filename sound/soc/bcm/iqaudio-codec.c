@@ -37,7 +37,7 @@ static int snd_rpi_iqaudio_post_dapm_event(struct snd_soc_dapm_widget *w,
      switch (event) {
      case SND_SOC_DAPM_POST_PMU:
            /* Delay for mic bias ramp */
-           msleep(200);
+           msleep(300);
            break;
      default:
            break;
