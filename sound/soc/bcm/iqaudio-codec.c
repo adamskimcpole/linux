@@ -30,11 +30,37 @@
 
 static int samplerate=44100;
 
+static int snd_rpi_iqaudio_post_dapm_event(struct snd_soc_dapm_widget *w,
+                              struct snd_kcontrol *kcontrol,
+                              int event)
+{
+     switch (event) {
+     case SND_SOC_DAPM_POST_PMU:
+           /* Delay for mic bias ramp */
+           msleep(200);
+           break;
+     default:
+           break;
+     }
+
+     return 0;
+}
+
+
 static const struct snd_kcontrol_new controls[] = {
 	SOC_DAPM_PIN_SWITCH("Headphone Jack"),
 	SOC_DAPM_PIN_SWITCH("Headset Mic"),
 	SOC_DAPM_PIN_SWITCH("Mic"),
 	SOC_DAPM_PIN_SWITCH("Aux In"),
+};
+
+static const struct snd_soc_dapm_widget dapm_widgets[] = {
+	SND_SOC_DAPM_HP("Headphone Jack", NULL),
+	SND_SOC_DAPM_MIC("Headset Mic", NULL),
+	SND_SOC_DAPM_MIC("Mic", NULL),
+	SND_SOC_DAPM_LINE("Aux In", NULL),
+//	SND_SOC_DAPM_PRE("Pre Power Up Event", snd_rpi_iqaudio_post_dapm_event),
+	SND_SOC_DAPM_POST("Post Power Up Event", snd_rpi_iqaudio_post_dapm_event),
 };
 
 static const struct snd_soc_dapm_route audio_map[] = {
@@ -134,27 +160,9 @@ static struct snd_soc_card snd_rpi_iqaudio_codec = {
 	.owner			= THIS_MODULE,
 	.dai_link		= snd_rpi_iqaudio_codec_dai,
 	.num_links		= ARRAY_SIZE(snd_rpi_iqaudio_codec_dai),
+	.dapm_widgets		= dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(dapm_widgets),
 };
-
-static int snd_rpi_iqaudio_post_dapm_event(struct snd_soc_dapm_widget *w,
-                              struct snd_kcontrol *kcontrol,
-                              int event)
-{
-     switch (event) {
-     case SND_SOC_DAPM_POST_PMU:
-           /* Delay for mic bias ramp */
-           msleep(2000);
-           break;
-     case SND_SOC_DAPM_PRE_PMU:
-           /* Delay for mic bias ramp */
-           msleep(2000);
-           break;
-     default:
-           break;
-     }
-
-     return 0;
-}
 
 static int snd_rpi_iqaudio_codec_probe(struct platform_device *pdev)
 {
@@ -223,15 +231,6 @@ static struct platform_driver snd_rpi_iqaudio_codec_driver = {
 	.remove         = snd_rpi_iqaudio_codec_remove,
 };
 
-
-static const struct snd_soc_dapm_widget dapm_widgets[] = {
-	SND_SOC_DAPM_HP("Headphone Jack", NULL),
-	SND_SOC_DAPM_MIC("Headset Mic", NULL),
-	SND_SOC_DAPM_MIC("Mic", NULL),
-	SND_SOC_DAPM_LINE("Aux In", NULL),
-//	SND_SOC_DAPM_PRE("Pre Power Up Event", snd_rpi_iqaudio_post_dapm_event),
-	SND_SOC_DAPM_POST("Post Power Up Event", snd_rpi_iqaudio_post_dapm_event),
-};
 
 
 module_platform_driver(snd_rpi_iqaudio_codec_driver);
