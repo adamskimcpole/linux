@@ -28,7 +28,32 @@
 #include <linux/slab.h>
 #include "../codecs/da7213.h"
 
-static int samplerate=44100;
+static int pll_out = DA7213_PLL_FREQ_OUT_90316800;
+
+static int snd_rpi_iqaudio_pll_control(struct snd_soc_dapm_widget *w,
+				       struct snd_kcontrol *k, int  event)
+{
+	int ret = 0;
+	struct snd_soc_dapm_context *dapm = w->dapm;
+	struct snd_soc_card *card = dapm->card;
+	struct snd_soc_pcm_runtime *rtd =
+		snd_soc_get_pcm_runtime(card, card->dai_link[0].name);
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+
+	if (SND_SOC_DAPM_EVENT_OFF(event)) {
+		ret = snd_soc_dai_set_pll(codec_dai, 0, DA7213_SYSCLK_MCLK, 0,
+					  0);
+		if (ret)
+			dev_err(card->dev, "Failed to bypass PLL: %d\n", ret);
+	} else if (SND_SOC_DAPM_EVENT_ON(event)) {
+		ret = snd_soc_dai_set_pll(codec_dai, 0, DA7213_SYSCLK_PLL, 0,
+					  pll_out);
+		if (ret)
+			dev_err(card->dev, "Failed to enable PLL: %d\n", ret);
+	}
+
+	return ret;
+}
 
 static int snd_rpi_iqaudio_post_dapm_event(struct snd_soc_dapm_widget *w,
                               struct snd_kcontrol *kcontrol,
@@ -46,97 +71,79 @@ static int snd_rpi_iqaudio_post_dapm_event(struct snd_soc_dapm_widget *w,
      return 0;
 }
 
-
-static const struct snd_kcontrol_new controls[] = {
-	SOC_DAPM_PIN_SWITCH("Headphone Jack"),
-	SOC_DAPM_PIN_SWITCH("Headset Mic"),
-	SOC_DAPM_PIN_SWITCH("Mic"),
-	SOC_DAPM_PIN_SWITCH("Aux In"),
-};
-
 static const struct snd_soc_dapm_widget dapm_widgets[] = {
-	SND_SOC_DAPM_HP("Headphone Jack", NULL),
-	SND_SOC_DAPM_MIC("Headset Mic", NULL),
-	SND_SOC_DAPM_MIC("Mic", NULL),
-	SND_SOC_DAPM_LINE("Aux In", NULL),
-//	SND_SOC_DAPM_PRE("Pre Power Up Event", snd_rpi_iqaudio_post_dapm_event),
+	SND_SOC_DAPM_HP("HP Jack", NULL),
+	SND_SOC_DAPM_MIC("MIC Jack", NULL),
+	SND_SOC_DAPM_MIC("Onboard MIC", NULL),
+	SND_SOC_DAPM_LINE("AUX Jack", NULL),
+	SND_SOC_DAPM_SUPPLY("PLL Control", SND_SOC_NOPM, 0, 0,
+			    snd_rpi_iqaudio_pll_control,
+			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_POST("Post Power Up Event", snd_rpi_iqaudio_post_dapm_event),
 };
 
 static const struct snd_soc_dapm_route audio_map[] = {
-	{"Headphone Jack", NULL, "HPL"},
-	{"Headphone Jack", NULL, "HPR"},
+	{"HP Jack", NULL, "HPL"},
+	{"HP Jack", NULL, "HPR"},
+	{"HP Jack", NULL, "PLL Control"},
 
-	{"AUXL", NULL, "Aux In"},
-	{"AUXR", NULL, "Aux In"},
+	{"AUX Jack", NULL, "AUXR"},
+	{"AUX Jack", NULL, "AUXL"},
+	{"AUX Jack", NULL, "PLL Control"},
 
 	/* Assume Mic1 is linked to Headset and Mic2 to on-board mic */
-	{"MIC1", NULL, "Headset Mic"},
-	{"MIC2", NULL, "Mic"},
-
+	{"MIC Jack", NULL, "MIC1"},
+	{"MIC Jack", NULL, "PLL Control"},
+	{"Onboard MIC", NULL, "MIC2"},
+	{"Onboard MIC", NULL, "PLL Control"},
 };
 
 /* machine stream operations */
 
-static int snd_rpi_iqaudio_codec_hw_params(struct snd_pcm_substream *substream,
-			  struct snd_pcm_hw_params *params)
+static int snd_rpi_iqaudio_codec_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	struct snd_soc_codec *codec = rtd->codec;		// Added for error message support
-	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;		// Added to support bclk_ratio
-
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	int ret;
 
-// Set clock frequency, onboard 11.2896MHz clock
-	ret = snd_soc_dai_set_sysclk(codec_dai, DA7213_CLKSRC_MCLK,
-				     11289600, SND_SOC_CLOCK_OUT);
+	/* Set bclk ratio to align with codec's BCLK rate */
+	ret = snd_soc_dai_set_bclk_ratio(cpu_dai, 64);
+	if (ret) {
+		dev_err(rtd->dev, "Failed to set CPU BLCK ratio\n");
+		return ret;
+	}
 
-	if (ret < 0)
-		dev_err(codec_dai->dev, "can't set codec sysclk configuration\n");
+	/* Set MCLK frequency to codec, onboard 11.2896MHz clock */
+	return snd_soc_dai_set_sysclk(codec_dai, DA7213_CLKSRC_MCLK, 11289600,
+				      SND_SOC_CLOCK_OUT);
+}
 
-	samplerate = params_rate(params);
-
-// MASTER mode
-// for 48 etc 		DA7213_PLL_FREQ_OUT_98304000
-// for 44.1 etc 	DA7213_PLL_FREQ_OUT_90316800
+static int snd_rpi_iqaudio_codec_hw_params(struct snd_pcm_substream *substream,
+					   struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	unsigned int samplerate = params_rate(params);
 
 	switch (samplerate) {
-		case  8000:
-		case 16000:
-		case 32000:
-		case 48000:
-		case 96000:
-		case 192000:
-			ret = snd_soc_dai_set_pll(codec_dai, 0,
-				DA7213_SYSCLK_PLL, 0, DA7213_PLL_FREQ_OUT_98304000);
-			break;
-		case 44100:
-		case 88200:
-		case 176400:
-			ret = snd_soc_dai_set_pll(codec_dai, 0,
-				DA7213_SYSCLK_PLL, 0, DA7213_PLL_FREQ_OUT_90316800);
-			break;
-		default:
-			dev_err(codec->dev,"Failed to set DA7213 SYSCLK, unsupported samplerate %d\n", samplerate);
+	case  8000:
+	case 16000:
+	case 32000:
+	case 48000:
+	case 96000:
+		pll_out = DA7213_PLL_FREQ_OUT_98304000;
+		return 0;
+	case 44100:
+	case 88200:
+		pll_out = DA7213_PLL_FREQ_OUT_90316800;
+		return 0;
+	default:
+		dev_err(rtd->dev,"Unsupported samplerate %d\n", samplerate);
+		return -EINVAL;
 	}
-
-	if (ret < 0) {
-		dev_err(codec_dai->dev, "failed to start PLL: %d\n", ret);
-		return -EIO;
-	}
-
-	// Set bclk ratio
-	return snd_soc_dai_set_bclk_ratio(cpu_dai,64);
 }
 
 static const struct snd_soc_ops snd_rpi_iqaudio_codec_ops = {
 	.hw_params = snd_rpi_iqaudio_codec_hw_params,
-
-// Do not close down the PLL by default.
-// Doing so would stop record if playback stopped
-// or playback ir record is stopped.
-//	.hw_free = snd_rpi_iqaudio_codec_hw_free,
 };
 
 
@@ -145,13 +152,14 @@ static struct snd_soc_dai_link snd_rpi_iqaudio_codec_dai[] = {
 	.cpu_dai_name 		= "bcm2708-i2s.0",
 	.codec_dai_name 	= "da7213-hifi",
 	.platform_name 		= "bmc2708-i2s.0",
-	.codec_name 		= "da7213.1-001a",				// I2C addess 0x01a on Pi
-	.dai_fmt 		= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
-					| SND_SOC_DAIFMT_CBM_CFM,		// MASTER clock and frame
+	.codec_name 		= "da7213.1-001a",
+	.dai_fmt 		= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_CBM_CFM,
+	.init			= snd_rpi_iqaudio_codec_init,
 	.ops			= &snd_rpi_iqaudio_codec_ops,
-    	.symmetric_rates	= 1,						// Added as per AT 15/5/17
-    	.symmetric_channels	= 1,
-    	.symmetric_samplebits	= 1,
+	.symmetric_rates	= 1,
+	.symmetric_channels	= 1,
+	.symmetric_samplebits	= 1,
 },
 };
 
@@ -162,6 +170,8 @@ static struct snd_soc_card snd_rpi_iqaudio_codec = {
 	.num_links		= ARRAY_SIZE(snd_rpi_iqaudio_codec_dai),
 	.dapm_widgets		= dapm_widgets,
 	.num_dapm_widgets	= ARRAY_SIZE(dapm_widgets),
+	.dapm_routes		= audio_map,
+	.num_dapm_routes	= ARRAY_SIZE(audio_map),
 };
 
 static int snd_rpi_iqaudio_codec_probe(struct platform_device *pdev)
